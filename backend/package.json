@@ -1,0 +1,28 @@
+{
+  "name": "kalundborg-voice-assistant-backend",
+  "version": "1.0.0",
+  "description": "Backend server for Kalundborg voice assistant",
+  "main": "conversation-server.js",
+  "type": "module",
+  "scripts": {
+    "start": "NODE_TLS_REJECT_UNAUTHORIZED=0 node conversation-server.js",
+    "dev": "NODE_TLS_REJECT_UNAUTHORIZED=0 nodemon conversation-server.js",
+    "dev:ga": "NODE_TLS_REJECT_UNAUTHORIZED=0 node ga-conversation-server.js",
+    "dev:realtime": "NODE_TLS_REJECT_UNAUTHORIZED=0 node realtime-server.js"
+  },
+  "dependencies": {
+    "axios": "^1.12.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "openai": "^5.23.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
