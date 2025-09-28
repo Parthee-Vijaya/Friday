@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎤 Kalundborg Voice Assistant - OpenAI Realtime</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 100%);
+            color: #e5e5e5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid #2d2d44;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4444;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connected { background: #44ff44; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .status-text {
+            font-size: 0.9rem;
+            color: #a0a0a0;
+            font-weight: 500;
+        }
+
+        .chat {
+            flex: 1;
+            padding: 2rem;
+            max-width: 800px;
+            margin: 0 auto;
+            width: 100%;
+            overflow-y: auto;
+        }
+
+        .welcome {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: #a0a0a0;
+        }
+
+        .welcome h2 {
+            color: #ffffff;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .welcome p {
+            margin-bottom: 0.75rem;
+            line-height: 1.6;
+        }
+
+        .welcome .highlight {
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .message {
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            border-radius: 12px;
+            background: #1a1a2e;
+            border: 1px solid #2d2d44;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            margin-left: 2rem;
+            background: linear-gradient(135deg, #16213e 0%, #1e3a8a 100%);
+            border-color: #3b82f6;
+        }
+
+        .message.assistant {
+            margin-right: 2rem;
+            background: linear-gradient(135deg, #1a1a2e 0%, #2d2d44 100%);
+            border-color: #6366f1;
+        }
+
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            font-size: 0.75rem;
+            color: #a0a0a0;
+        }
+
+        .role {
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .message.user .role {
+            color: #60a5fa;
+            background: rgba(96, 165, 250, 0.2);
+        }
+
+        .message.assistant .role {
+            color: #a78bfa;
+            background: rgba(167, 139, 250, 0.2);
+        }
+
+        .timestamp {
+            font-family: 'SF Mono', 'Monaco', monospace;
+            font-size: 0.7rem;
+        }
+
+        .message-content {
+            color: #ffffff;
+            line-height: 1.7;
+            font-size: 1rem;
+        }
+
+        .controls {
+            padding: 2rem;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-top: 1px solid #2d2d44;
+            text-align: center;
+        }
+
+        .voice-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 60px;
+            padding: 1.5rem 2.5rem;
+            font-size: 1.2rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 200px;
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+            user-select: none;
+        }
+
+        .voice-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 35px rgba(102, 126, 234, 0.6);
+        }
+
+        .voice-btn:active {
+            transform: translateY(-1px);
+        }
+
+        .voice-btn:disabled {
+            background: linear-gradient(135deg, #404040 0%, #303030 100%);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .voice-btn.recording {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+            box-shadow: 0 8px 25px rgba(255, 107, 107, 0.6);
+            animation: recordingPulse 1.5s infinite;
+        }
+
+        @keyframes recordingPulse {
+            0%, 100% {
+                box-shadow: 0 8px 25px rgba(255, 107, 107, 0.6);
+                transform: translateY(-3px) scale(1);
+            }
+            50% {
+                box-shadow: 0 12px 40px rgba(255, 107, 107, 0.9);
+                transform: translateY(-3px) scale(1.02);
+            }
+        }
+
+        .instructions {
+            margin-top: 1rem;
+            color: #a0a0a0;
+            font-size: 0.85rem;
+            max-width: 350px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .error {
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            color: white;
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            text-align: center;
+            max-width: 400px;
+            margin: 1rem auto;
+            box-shadow: 0 4px 15px rgba(220, 38, 38, 0.3);
+        }
+
+        .chat::-webkit-scrollbar { width: 8px; }
+        .chat::-webkit-scrollbar-track { background: transparent; }
+        .chat::-webkit-scrollbar-thumb { background: #2d2d44; border-radius: 4px; }
+        .chat::-webkit-scrollbar-thumb:hover { background: #404040; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎤 Kalundborg Voice Assistant</h1>
+        <div class="status">
+            <div class="status-dot" id="status"></div>
+            <span id="statusText">Forbinder til OpenAI Realtime...</span>
+        </div>
+    </div>
+
+    <div class="chat" id="chat">
+        <div class="welcome">
+            <h2>Velkommen til Kalundborg Voice Assistant</h2>
+            <p>Hold knappen nede og <strong>tal om Kalundborg Kommune</strong></p>
+            <p class="highlight">✨ Powered by OpenAI Realtime Voice API ✨</p>
+            <p><strong>Eksempler:</strong> "Hvad er telefonnummeret til kommunen?" • "Hvordan kommer jeg til Samsø?" • "Hvilke strande er der?"</p>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button class="voice-btn" id="voiceBtn" disabled>
+            🔌 Forbinder...
+        </button>
+        <div id="error"></div>
+        <div class="instructions">
+            <p>Hold knappen nede mens du taler, slip for at få svar fra AI'en</p>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let audioContext = null;
+        let microphone = null;
+        let processor = null;
+        let stream = null;
+        let isRecording = false;
+        let isConnected = false;
+        let audioQueue = [];
+        let isPlaying = false;
+
+        const elements = {
+            status: document.getElementById('status'),
+            statusText: document.getElementById('statusText'),
+            chat: document.getElementById('chat'),
+            voiceBtn: document.getElementById('voiceBtn'),
+            error: document.getElementById('error')
+        };
+
+        // Initialize audio context
+        async function initAudio() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 24000
+                });
+
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+
+                console.log('🎵 Audio context initialized');
+            } catch (error) {
+                showError('Kunne ikke initialisere audio: ' + error.message);
+            }
+        }
+
+        // Connect to WebSocket
+        function connect() {
+            try {
+                ws = new WebSocket('ws://localhost:3001');
+
+                ws.onopen = () => {
+                    console.log('🔗 Connected to server');
+                    isConnected = true;
+                    elements.status.className = 'status-dot connected';
+                    elements.statusText.textContent = 'Starter OpenAI session...';
+
+                    ws.send(JSON.stringify({ type: 'start_session' }));
+                };
+
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                };
+
+                ws.onclose = () => {
+                    console.log('🔌 Disconnected');
+                    isConnected = false;
+                    elements.status.className = 'status-dot';
+                    elements.statusText.textContent = 'Forbindelse mistet';
+                    elements.voiceBtn.disabled = true;
+
+                    setTimeout(connect, 3000);
+                };
+
+                ws.onerror = () => {
+                    showError('Forbindelse fejlede. Sørg for backend kører på port 3001');
+                };
+
+            } catch (error) {
+                showError('Kunne ikke forbinde: ' + error.message);
+            }
+        }
+
+        // Handle server messages
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'session_ready':
+                    console.log('✅ Session ready');
+                    break;
+
+                case 'openai_session_ready':
+                    console.log('🤖 OpenAI session ready');
+                    elements.statusText.textContent = 'Klar til at lytte';
+                    elements.voiceBtn.disabled = false;
+                    elements.voiceBtn.textContent = '🎤 Hold for at tale';
+                    break;
+
+                case 'speech_started':
+                    console.log('🎤 Speech detected');
+                    elements.statusText.textContent = 'Lytter...';
+                    break;
+
+                case 'speech_stopped':
+                    console.log('🔇 Speech stopped');
+                    elements.statusText.textContent = 'Behandler...';
+                    break;
+
+                case 'transcription_complete':
+                    console.log('📝 Transcription:', data.text);
+                    addMessage('user', data.text, data.timestamp);
+                    break;
+
+                case 'audio_delta':
+                    if (data.delta) {
+                        playAudioDelta(data.delta);
+                    }
+                    break;
+
+                case 'response_text_delta':
+                    updateResponseText(data.delta);
+                    break;
+
+                case 'response_complete':
+                    console.log('✅ Response complete');
+                    elements.statusText.textContent = 'Klar til at lytte';
+                    break;
+
+                case 'error':
+                    console.error('❌ Error:', data.message);
+                    showError(data.message);
+                    elements.statusText.textContent = 'Fejl opstod';
+                    break;
+
+                default:
+                    console.log('📨 Message:', data.type);
+            }
+        }
+
+        // Add message to chat
+        function addMessage(role, content, timestamp) {
+            const welcome = elements.chat.querySelector('.welcome');
+            if (welcome) welcome.remove();
+
+            const msg = document.createElement('div');
+            msg.className = `message ${role}`;
+            msg.innerHTML = `
+                <div class="message-header">
+                    <span class="role">${role.toUpperCase()}</span>
+                    <span class="timestamp">${formatTime(timestamp || new Date().toISOString())}</span>
+                </div>
+                <div class="message-content">${content}</div>
+            `;
+
+            elements.chat.appendChild(msg);
+            elements.chat.scrollTop = elements.chat.scrollHeight;
+        }
+
+        // Update streaming response
+        let currentAssistantMessage = null;
+        function updateResponseText(delta) {
+            if (!currentAssistantMessage) {
+                currentAssistantMessage = addMessage('assistant', '', new Date().toISOString());
+            }
+
+            const contentDiv = currentAssistantMessage.querySelector('.message-content');
+            contentDiv.textContent += delta;
+            elements.chat.scrollTop = elements.chat.scrollHeight;
+        }
+
+        // Play audio delta
+        function playAudioDelta(base64Audio) {
+            try {
+                const binaryString = atob(base64Audio);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+
+                const pcm16 = new Int16Array(bytes.buffer);
+                audioQueue.push(pcm16);
+
+                if (!isPlaying) {
+                    playAudioQueue();
+                }
+            } catch (error) {
+                console.error('Error playing audio:', error);
+            }
+        }
+
+        // Play queued audio
+        async function playAudioQueue() {
+            if (!audioContext || audioQueue.length === 0) return;
+
+            isPlaying = true;
+            elements.statusText.textContent = 'Afspiller svar...';
+
+            try {
+                while (audioQueue.length > 0) {
+                    const pcmData = audioQueue.shift();
+
+                    const audioBuffer = audioContext.createBuffer(1, pcmData.length, 24000);
+                    const channelData = audioBuffer.getChannelData(0);
+
+                    for (let i = 0; i < pcmData.length; i++) {
+                        channelData[i] = pcmData[i] / 32768;
+                    }
+
+                    const source = audioContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioContext.destination);
+
+                    await new Promise(resolve => {
+                        source.onended = resolve;
+                        source.start();
+                    });
+                }
+            } catch (error) {
+                console.error('Error playing audio queue:', error);
+            } finally {
+                isPlaying = false;
+                elements.statusText.textContent = 'Klar til at lytte';
+                currentAssistantMessage = null;
+            }
+        }
+
+        // Start recording
+        async function startRecording() {
+            try {
+                if (!audioContext) await initAudio();
+
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 24000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+
+                microphone = audioContext.createMediaStreamSource(stream);
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+                processor.onaudioprocess = (event) => {
+                    if (!isRecording) return;
+
+                    const inputData = event.inputBuffer.getChannelData(0);
+                    const pcm16 = new Int16Array(inputData.length);
+
+                    for (let i = 0; i < inputData.length; i++) {
+                        const sample = Math.max(-1, Math.min(1, inputData[i]));
+                        pcm16[i] = sample * 32767;
+                    }
+
+                    const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)));
+
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'audio_chunk',
+                            audio: base64
+                        }));
+                    }
+                };
+
+                microphone.connect(processor);
+                processor.connect(audioContext.destination);
+
+                isRecording = true;
+                elements.voiceBtn.className = 'voice-btn recording';
+                elements.voiceBtn.textContent = '🔴 Slip for at sende';
+                elements.statusText.textContent = 'Optager...';
+
+                console.log('🎤 Recording started');
+
+            } catch (error) {
+                showError('Kunne ikke starte optagelse: ' + error.message);
+            }
+        }
+
+        // Stop recording
+        function stopRecording() {
+            isRecording = false;
+
+            if (processor) {
+                processor.disconnect();
+                processor = null;
+            }
+
+            if (microphone) {
+                microphone.disconnect();
+                microphone = null;
+            }
+
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+
+            elements.voiceBtn.className = 'voice-btn';
+            elements.voiceBtn.textContent = '🎤 Hold for at tale';
+            elements.statusText.textContent = 'Afslutter optagelse...';
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'create_response' }));
+            }
+
+            console.log('🔇 Recording stopped');
+        }
+
+        // Show error
+        function showError(message) {
+            elements.error.innerHTML = `<div class="error">${message}</div>`;
+            setTimeout(() => {
+                elements.error.innerHTML = '';
+            }, 5000);
+        }
+
+        // Format timestamp
+        function formatTime(timestamp) {
+            return new Date(timestamp).toLocaleTimeString('da-DK', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        // Event listeners
+        elements.voiceBtn.addEventListener('mousedown', startRecording);
+        elements.voiceBtn.addEventListener('mouseup', stopRecording);
+        elements.voiceBtn.addEventListener('touchstart', startRecording);
+        elements.voiceBtn.addEventListener('touchend', stopRecording);
+
+        // Prevent context menu on long press
+        elements.voiceBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // Initialize
+        initAudio().then(() => {
+            connect();
+        });
+    </script>
+</body>
+</html>

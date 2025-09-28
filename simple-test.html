@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalundborg Voice Assistant - Test</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f23;
+            color: #e5e5e5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #2d2d44;
+            background: #1a1a2e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status { display: flex; align-items: center; gap: 0.5rem; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #44ff44; }
+
+        .chat { flex: 1; padding: 2rem; max-width: 800px; margin: 0 auto; width: 100%; }
+
+        .message {
+            margin: 1rem 0;
+            padding: 1rem;
+            border-radius: 8px;
+            background: #1a1a2e;
+            border: 1px solid #2d2d44;
+        }
+
+        .user { background: #16213e; border-color: #1e3a8a; }
+
+        .controls {
+            padding: 2rem;
+            background: #1a1a2e;
+            border-top: 1px solid #2d2d44;
+            text-align: center;
+        }
+
+        .voice-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            padding: 1rem 2rem;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .voice-btn:hover { transform: translateY(-2px); }
+        .recording { background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%); }
+
+        .welcome {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: #a0a0a0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎤 Kalundborg Voice Assistant</h1>
+        <div class="status">
+            <div class="status-dot" id="status"></div>
+            <span id="statusText">Forbinder...</span>
+        </div>
+    </div>
+
+    <div class="chat" id="chat">
+        <div class="welcome">
+            <h2>Velkommen til Kalundborg Voice Assistant</h2>
+            <p>Tryk på mikrofon-knappen og spørg om Kalundborg Kommune</p>
+            <p><strong>Test backend:</strong> Backend kører på port 3001</p>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button class="voice-btn" id="voiceBtn" onclick="toggleRecording()">
+            🎤 Test Forbindelse
+        </button>
+        <div id="error" style="color: #ff6b6b; margin-top: 1rem;"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isRecording = false;
+
+        // Test WebSocket forbindelse
+        function connectWebSocket() {
+            try {
+                ws = new WebSocket('ws://localhost:3001');
+
+                ws.onopen = () => {
+                    document.getElementById('status').style.background = '#44ff44';
+                    document.getElementById('statusText').textContent = 'Forbundet til backend';
+                    document.getElementById('voiceBtn').textContent = '🎤 Klik for at teste';
+
+                    ws.send(JSON.stringify({ type: 'start_conversation' }));
+                };
+
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    console.log('Modtaget:', data);
+
+                    if (data.type === 'conversation_started') {
+                        addMessage('system', 'Samtale startet! Backend forbundet korrekt.');
+                    }
+                };
+
+                ws.onclose = () => {
+                    document.getElementById('status').style.background = '#ff4444';
+                    document.getElementById('statusText').textContent = 'Ikke forbundet';
+                };
+
+                ws.onerror = () => {
+                    document.getElementById('error').textContent = 'Kan ikke forbinde til backend på port 3001';
+                };
+
+            } catch (error) {
+                document.getElementById('error').textContent = 'WebSocket fejl: ' + error.message;
+            }
+        }
+
+        function addMessage(type, text) {
+            const chat = document.getElementById('chat');
+            const welcome = chat.querySelector('.welcome');
+            if (welcome) welcome.remove();
+
+            const msg = document.createElement('div');
+            msg.className = `message ${type}`;
+            msg.innerHTML = `
+                <div style="font-size: 0.75rem; color: #a0a0a0; margin-bottom: 0.5rem;">
+                    ${type.toUpperCase()} - ${new Date().toLocaleTimeString('da-DK')}
+                </div>
+                <div>${text}</div>
+            `;
+            chat.appendChild(msg);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function toggleRecording() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                document.getElementById('error').textContent = 'Backend ikke forbundet';
+                return;
+            }
+
+            // Test besked til backend
+            ws.send(JSON.stringify({
+                type: 'text_input',
+                text: 'Hvad er telefonnummeret til Kalundborg Kommune?'
+            }));
+
+            addMessage('user', 'Hvad er telefonnummeret til Kalundborg Kommune?');
+            document.getElementById('voiceBtn').textContent = '🤖 Venter på svar...';
+        }
+
+        // Start forbindelse når siden indlæses
+        connectWebSocket();
+    </script>
+</body>
+</html>

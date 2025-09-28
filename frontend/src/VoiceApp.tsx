@@ -20,6 +20,12 @@ interface VoiceState {
   error?: string;
 }
 
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+  groupId: string;
+}
+
 interface LogEntry {
   id: string;
   level: LogLevel;
@@ -40,6 +46,8 @@ function VoiceApp() {
     audioLevel: 0,
   });
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
   const ws = useRef<WebSocket | null>(null);
   const audioContext = useRef<AudioContext | null>(null);
@@ -176,6 +184,32 @@ function VoiceApp() {
       setState(prev => ({ ...prev, error: 'Kunne ikke initialisere audio' }));
     }
   }, [pushLog]);
+
+  const loadAudioDevices = useCallback(async () => {
+    try {
+      // Request permission first
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices
+        .filter(device => device.kind === 'audioinput')
+        .map(device => ({
+          deviceId: device.deviceId,
+          label: device.label || `Mikrofon ${device.deviceId.slice(0, 8)}`,
+          groupId: device.groupId
+        }));
+
+      setAudioDevices(audioInputs);
+
+      if (audioInputs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(audioInputs[0].deviceId);
+      }
+
+      pushLog('info', `Fandt ${audioInputs.length} mikrofoner`);
+    } catch (error) {
+      pushLog('error', 'Kunne ikke indlæse audio-enheder', error);
+    }
+  }, [pushLog, selectedDeviceId]);
 
   const playAudioQueue = useCallback(async () => {
     if (!audioContext.current || audioQueue.current.length === 0) return;
@@ -390,13 +424,19 @@ function VoiceApp() {
     try {
       await initializeAudio();
 
+      const audioConstraints: MediaTrackConstraints = {
+        sampleRate: 24000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true
+      };
+
+      if (selectedDeviceId) {
+        audioConstraints.deviceId = { exact: selectedDeviceId };
+      }
+
       stream.current = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 24000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true
-        }
+        audio: audioConstraints
       });
 
       // Set up audio processing with ScriptProcessor (but properly connected)
@@ -533,6 +573,7 @@ function VoiceApp() {
 
   useEffect(() => {
     connectWebSocket();
+    loadAudioDevices();
 
     return () => {
       if (ws.current) {
@@ -542,7 +583,7 @@ function VoiceApp() {
         audioContext.current.close();
       }
     };
-  }, [connectWebSocket]);
+  }, [connectWebSocket, loadAudioDevices]);
 
   const formatTime = (timestamp: string) => {
     return new Date(timestamp).toLocaleTimeString('da-DK', {
@@ -636,6 +677,24 @@ function VoiceApp() {
           </div>
 
           <div className="session-controls">
+            {audioDevices.length > 1 && (
+              <div className="microphone-selector">
+                <label htmlFor="mic-select">Mikrofon:</label>
+                <select
+                  id="mic-select"
+                  value={selectedDeviceId}
+                  onChange={(e) => setSelectedDeviceId(e.target.value)}
+                  disabled={state.isRecording}
+                >
+                  {audioDevices.map(device => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <button
               className={`mic ${state.isRecording ? 'is-recording' : ''}`}
               onMouseDown={handleHoldStart}
@@ -674,6 +733,83 @@ function VoiceApp() {
             <div className="session-controls__meta">
               <span>Node 18 · OpenAI realtime-2024-10-01 · PCM16</span>
               {state.error && <span className="session-error">{state.error}</span>}
+            </div>
+          </div>
+
+          <div className="example-questions">
+            <h3>💬 Eksempel spørgsmål du kan stille:</h3>
+            <div className="questions-grid">
+              <div className="question-category">
+                <h4>📞 Kontakt & Åbningstider</h4>
+                <ul>
+                  <li>"Hvad er telefonnummeret til Kalundborg Kommune?"</li>
+                  <li>"Hvornår har borgerservice åbent?"</li>
+                  <li>"Hvor ligger borgerservice?"</li>
+                </ul>
+              </div>
+
+              <div className="question-category">
+                <h4>🗑️ Affald & Genbrug</h4>
+                <ul>
+                  <li>"Hvornår har genbrugspladsen åbent?"</li>
+                  <li>"Hvor ligger genbrugspladsen?"</li>
+                  <li>"Hvem står for affaldsindsamling?"</li>
+                </ul>
+              </div>
+
+              <div className="question-category">
+                <h4>🏥 Sundhed</h4>
+                <ul>
+                  <li>"Hvor kan jeg finde en læge?"</li>
+                  <li>"Hvad er nummeret til nærklinikken?"</li>
+                  <li>"Hvor er der tandlæger?"</li>
+                </ul>
+              </div>
+
+              <div className="question-category">
+                <h4>🏫 Uddannelse</h4>
+                <ul>
+                  <li>"Hvilke skoler er der i Kalundborg?"</li>
+                  <li>"Hvor mange børnehaver er der?"</li>
+                  <li>"Hvilke uddannelser kan man tage?"</li>
+                </ul>
+              </div>
+
+              <div className="question-category">
+                <h4>🏗️ Byggeri & Tilladelser</h4>
+                <ul>
+                  <li>"Hvordan ansøger jeg om byggetilladelse?"</li>
+                  <li>"Hvor søger jeg byggetilladelse?"</li>
+                  <li>"Hvem kontakter jeg ved byggesager?"</li>
+                </ul>
+              </div>
+
+              <div className="question-category">
+                <h4>🚌 Transport</h4>
+                <ul>
+                  <li>"Hvilke buslinjer kører i Kalundborg?"</li>
+                  <li>"Hvordan kommer jeg til København?"</li>
+                  <li>"Hvor er banegården?"</li>
+                </ul>
+              </div>
+
+              <div className="question-category">
+                <h4>🎭 Kultur & Fritid</h4>
+                <ul>
+                  <li>"Hvor mange kulturelle arrangementer er der?"</li>
+                  <li>"Hvor ligger biblioteket?"</li>
+                  <li>"Hvad sker der kulturelt i Kalundborg?"</li>
+                </ul>
+              </div>
+
+              <div className="question-category">
+                <h4>💼 Erhverv & Job</h4>
+                <ul>
+                  <li>"Hvor kan jeg få hjælp til jobsøgning?"</li>
+                  <li>"Hvem hjælper med erhvervsudvikling?"</li>
+                  <li>"Hvor mange indbyggere har Kalundborg?"</li>
+                </ul>
+              </div>
             </div>
           </div>
         </section>
