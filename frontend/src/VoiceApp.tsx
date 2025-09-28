@@ -339,7 +339,7 @@ function VoiceApp() {
     const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
     const configuredHost = process.env.REACT_APP_BACKEND_HOST || hostname;
     const configuredPort = process.env.REACT_APP_BACKEND_PORT
-      || (port === '3000' || port === '3004' ? '3001' : port);
+      || (port === '3000' || port === '3004' || port === '3200' ? '3100' : port);
 
     return `${wsProtocol}://${configuredHost}${configuredPort ? `:${configuredPort}` : ''}`;
   }, []);
