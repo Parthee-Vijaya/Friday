@@ -1,8 +1,8 @@
 import React from 'react';
-import ConversationApp from './ConversationApp.tsx';
+import VoiceApp from './VoiceApp.tsx';
 
 function App() {
-  return <ConversationApp />;
+  return <VoiceApp />;
 }
 
 export default App;

@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './VoiceApp.css';
 
+type Role = 'user' | 'assistant';
+type LogLevel = 'debug' | 'info' | 'success' | 'warning' | 'error';
+
 interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  role: Role;
   content: string;
   timestamp: string;
 }
@@ -13,8 +16,19 @@ interface VoiceState {
   isRecording: boolean;
   isProcessing: boolean;
   isPlaying: boolean;
+  audioLevel: number;
   error?: string;
 }
+
+interface LogEntry {
+  id: string;
+  level: LogLevel;
+  message: string;
+  timestamp: string;
+  meta?: string;
+}
+
+const MAX_LOG_ITEMS = 200;
 
 function VoiceApp() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -23,93 +37,248 @@ function VoiceApp() {
     isRecording: false,
     isProcessing: false,
     isPlaying: false,
+    audioLevel: 0,
   });
+  const [logs, setLogs] = useState<LogEntry[]>([]);
 
   const ws = useRef<WebSocket | null>(null);
   const audioContext = useRef<AudioContext | null>(null);
   const microphone = useRef<MediaStreamAudioSourceNode | null>(null);
   const processor = useRef<ScriptProcessorNode | null>(null);
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const audioQueue = useRef<Int16Array[]>([]);
   const isPlayingRef = useRef(false);
+  const isRecordingRef = useRef(false);
+  const hasSentAudioRef = useRef(false);
+  const recordingStartTime = useRef<number>(0);
+  const audioChunkCount = useRef<number>(0);
+  const currentAudioLevel = useRef<number>(0);
+  const pendingUserMessageId = useRef<string | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const inspectorRef = useRef<HTMLDivElement | null>(null);
 
-  // Initialize audio context
+  const formatMeta = (meta: unknown) => {
+    if (!meta) return undefined;
+    if (typeof meta === 'string') return meta;
+    if (meta instanceof Error) return meta.stack || meta.message;
+
+    try {
+      return JSON.stringify(meta, null, 2);
+    } catch (error) {
+      return String(meta);
+    }
+  };
+
+  const pushLog = useCallback((level: LogLevel, message: string, meta?: unknown) => {
+    const timestamp = new Date().toISOString();
+    const entry: LogEntry = {
+      id: `${timestamp}-${Math.random().toString(36).slice(2, 7)}`,
+      level,
+      message,
+      timestamp,
+      meta: formatMeta(meta)
+    };
+
+    setLogs(prev => {
+      const next = [...prev, entry];
+      if (next.length > MAX_LOG_ITEMS) {
+        return next.slice(next.length - MAX_LOG_ITEMS);
+      }
+      return next;
+    });
+
+    const logger: Record<LogLevel, (...args: unknown[]) => void> = {
+      debug: console.debug,
+      info: console.info,
+      success: console.info,
+      warning: console.warn,
+      error: console.error
+    };
+
+    if (entry.meta) {
+      logger[level](`[${entry.timestamp}] ${message}`, entry.meta);
+    } else {
+      logger[level](`[${entry.timestamp}] ${message}`);
+    }
+  }, []);
+
+  const addMessage = useCallback((role: Role, content: string, timestamp?: string) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        role,
+        content,
+        timestamp: timestamp || new Date().toISOString()
+      }
+    ]);
+  }, []);
+
+  const addMessageWithId = useCallback((id: string, role: Role, content: string) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id,
+        role,
+        content,
+        timestamp: new Date().toISOString()
+      }
+    ]);
+  }, []);
+
+  const updateMessageContent = useCallback((id: string, content: string) => {
+    setMessages(prev => prev.map(message => (
+      message.id === id
+        ? { ...message, content }
+        : message
+    )));
+  }, []);
+
+  const updateResponseText = useCallback((delta: string) => {
+    setMessages(prev => {
+      const lastMessage = prev[prev.length - 1];
+      if (lastMessage && lastMessage.role === 'assistant') {
+        return prev.map(message =>
+          message.id === lastMessage.id
+            ? { ...message, content: message.content + delta }
+            : message
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          role: 'assistant',
+          content: delta,
+          timestamp: new Date().toISOString()
+        }
+      ];
+    });
+  }, []);
+
   const initializeAudio = useCallback(async () => {
     try {
-      audioContext.current = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: 24000
-      });
+      if (!audioContext.current) {
+        audioContext.current = new (window.AudioContext || (window as any).webkitAudioContext)({
+          sampleRate: 24000
+        });
+        pushLog('info', 'Audio context initialiseret');
+      }
 
       if (audioContext.current.state === 'suspended') {
         await audioContext.current.resume();
+        pushLog('info', 'Audio context genoptaget');
       }
-
-      console.log('🎵 Audio context initialized');
     } catch (error) {
-      console.error('Error initializing audio:', error);
+      pushLog('error', 'Kunne ikke initialisere audio', error);
       setState(prev => ({ ...prev, error: 'Kunne ikke initialisere audio' }));
     }
-  }, []);
+  }, [pushLog]);
 
-  // Connect to WebSocket
-  const connectWebSocket = useCallback(() => {
+  const playAudioQueue = useCallback(async () => {
+    if (!audioContext.current || audioQueue.current.length === 0) return;
+
+    isPlayingRef.current = true;
+    setState(prev => ({ ...prev, isPlaying: true }));
+
     try {
-      ws.current = new WebSocket('ws://localhost:3001');
+      while (audioQueue.current.length > 0) {
+        const pcmData = audioQueue.current.shift();
+        if (!pcmData) continue;
 
-      ws.current.onopen = () => {
-        console.log('🔗 Connected to server');
-        setState(prev => ({ ...prev, isConnected: true, error: undefined }));
+        const audioBuffer = audioContext.current.createBuffer(1, pcmData.length, 24000);
+        const channelData = audioBuffer.getChannelData(0);
 
-        // Start OpenAI session
-        ws.current?.send(JSON.stringify({ type: 'start_session' }));
-      };
+        for (let i = 0; i < pcmData.length; i += 1) {
+          channelData[i] = pcmData[i] / 32768;
+        }
 
-      ws.current.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        handleServerMessage(data);
-      };
+        const source = audioContext.current.createBufferSource();
+        const gainNode = audioContext.current.createGain();
 
-      ws.current.onclose = () => {
-        console.log('🔌 Disconnected from server');
-        setState(prev => ({ ...prev, isConnected: false }));
-        setTimeout(connectWebSocket, 3000); // Reconnect after 3 seconds
-      };
+        source.buffer = audioBuffer;
+        gainNode.gain.setValueAtTime(0.7, audioContext.current.currentTime);  // Reduce volume to prevent clipping
 
-      ws.current.onerror = (error) => {
-        console.error('❌ WebSocket error:', error);
-        setState(prev => ({ ...prev, error: 'Forbindelse fejlede' }));
-      };
+        source.connect(gainNode);
+        gainNode.connect(audioContext.current.destination);
 
+        await new Promise<void>((resolve) => {
+          source.onended = () => resolve();
+          source.start();
+        });
+      }
     } catch (error) {
-      console.error('Error connecting:', error);
-      setState(prev => ({ ...prev, error: 'Kunne ikke forbinde' }));
+      pushLog('error', 'Fejl under afspilning af AI-svar', error);
+    } finally {
+      isPlayingRef.current = false;
+      setState(prev => ({ ...prev, isPlaying: false }));
     }
-  }, []);
+  }, [pushLog]);
 
-  // Handle server messages
-  const handleServerMessage = (data: any) => {
+  const playAudioDelta = useCallback((base64Audio: string) => {
+    try {
+      if (!audioContext.current) return;
+
+      const binaryString = atob(base64Audio);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i += 1) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const pcm16 = new Int16Array(bytes.buffer);
+      audioQueue.current.push(pcm16);
+
+      if (!isPlayingRef.current) {
+        void playAudioQueue();
+      }
+    } catch (error) {
+      pushLog('error', 'Kunne ikke afkode lyd fra OpenAI', error);
+    }
+  }, [playAudioQueue, pushLog]);
+
+  const handleServerMessage = useCallback((data: any) => {
     switch (data.type) {
+      case 'log':
+        pushLog(data.level ?? 'info', data.message, data.meta);
+        break;
+
       case 'session_ready':
-        console.log('✅ Session ready');
+        pushLog('success', 'Realtidssession initialiseret');
         break;
 
       case 'openai_session_ready':
-        console.log('🤖 OpenAI session ready');
+        pushLog('info', 'OpenAI session klar');
         setState(prev => ({ ...prev, isProcessing: false }));
         break;
 
       case 'speech_started':
-        console.log('🎤 Speech detected');
+        pushLog('info', 'Tale registreret');
         setState(prev => ({ ...prev, isProcessing: true }));
+
+        if (!pendingUserMessageId.current) {
+          const placeholderId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          pendingUserMessageId.current = placeholderId;
+          addMessageWithId(placeholderId, 'user', '… lytter');
+        }
         break;
 
       case 'speech_stopped':
-        console.log('🔇 Speech stopped');
+        pushLog('debug', 'Tale stoppet');
+        if (pendingUserMessageId.current) {
+          updateMessageContent(pendingUserMessageId.current, '… transskriberer');
+        }
         break;
 
       case 'transcription_complete':
-        console.log('📝 Transcription:', data.text);
-        addMessage('user', data.text, data.timestamp);
+        pushLog('success', 'Transskription modtaget', data.text);
+        if (pendingUserMessageId.current) {
+          updateMessageContent(pendingUserMessageId.current, data.text);
+          pendingUserMessageId.current = null;
+        } else {
+          addMessage('user', data.text, data.timestamp);
+        }
         break;
 
       case 'audio_delta':
@@ -119,127 +288,107 @@ function VoiceApp() {
         break;
 
       case 'response_text_delta':
-        // Handle streaming text response
         updateResponseText(data.delta);
         break;
 
+      case 'response_created':
+        pushLog('debug', 'OpenAI genererer svar');
+        break;
+
       case 'response_complete':
-        console.log('✅ Response complete');
+        pushLog('success', 'Svar færdigt');
         setState(prev => ({ ...prev, isProcessing: false }));
         break;
 
       case 'error':
-        console.error('❌ Server error:', data.message);
+        pushLog('error', data.message);
         setState(prev => ({ ...prev, error: data.message, isProcessing: false }));
+
+        if (pendingUserMessageId.current) {
+          updateMessageContent(pendingUserMessageId.current, 'Kunne ikke transskribere talte input');
+          pendingUserMessageId.current = null;
+        }
+        break;
+
+      case 'openai_disconnected':
+        pushLog('warning', 'OpenAI afbrudt - forsøger at genoprette');
+        if (pendingUserMessageId.current) {
+          updateMessageContent(pendingUserMessageId.current, 'Forbindelse mistet – prøv igen');
+          pendingUserMessageId.current = null;
+        }
         break;
 
       default:
-        console.log('📨 Server message:', data.type);
+        pushLog('debug', `Ukendt serverbesked: ${data.type}`);
     }
-  };
+  }, [
+    addMessage,
+    addMessageWithId,
+    playAudioDelta,
+    pushLog,
+    updateMessageContent,
+    updateResponseText
+  ]);
 
-  // Add message to chat
-  const addMessage = (role: 'user' | 'assistant', content: string, timestamp?: string) => {
-    const message: Message = {
-      id: Date.now().toString(),
-      role,
-      content,
-      timestamp: timestamp || new Date().toISOString()
-    };
-    setMessages(prev => [...prev, message]);
-  };
-
-  // Update streaming response
-  const updateResponseText = (delta: string) => {
-    setMessages(prev => {
-      const lastMessage = prev[prev.length - 1];
-      if (lastMessage && lastMessage.role === 'assistant') {
-        // Update existing assistant message
-        return prev.map(msg =>
-          msg.id === lastMessage.id
-            ? { ...msg, content: msg.content + delta }
-            : msg
-        );
-      } else {
-        // Create new assistant message
-        return [...prev, {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: delta,
-          timestamp: new Date().toISOString()
-        }];
-      }
-    });
-  };
-
-  // Play audio delta from OpenAI
-  const playAudioDelta = (base64Audio: string) => {
-    try {
-      if (!audioContext.current) return;
-
-      // Decode base64 to binary
-      const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      // Convert to 16-bit PCM
-      const pcm16 = new Int16Array(bytes.buffer);
-      audioQueue.current.push(pcm16);
-
-      if (!isPlayingRef.current) {
-        playAudioQueue();
-      }
-    } catch (error) {
-      console.error('Error playing audio delta:', error);
+  const resolveWebSocketUrl = useCallback(() => {
+    if (process.env.REACT_APP_BACKEND_WS) {
+      return process.env.REACT_APP_BACKEND_WS;
     }
-  };
 
-  // Play queued audio
-  const playAudioQueue = async () => {
-    if (!audioContext.current || audioQueue.current.length === 0) return;
+    const { protocol, hostname, port } = window.location;
+    const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
+    const configuredHost = process.env.REACT_APP_BACKEND_HOST || hostname;
+    const configuredPort = process.env.REACT_APP_BACKEND_PORT
+      || (port === '3000' || port === '3004' ? '3001' : port);
 
-    isPlayingRef.current = true;
-    setState(prev => ({ ...prev, isPlaying: true }));
+    return `${wsProtocol}://${configuredHost}${configuredPort ? `:${configuredPort}` : ''}`;
+  }, []);
+
+  const connectWebSocket = useCallback(() => {
+    if (ws.current && (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    const url = resolveWebSocketUrl();
 
     try {
-      while (audioQueue.current.length > 0) {
-        const pcmData = audioQueue.current.shift()!;
+      pushLog('info', `Opretter WebSocket til ${url}`);
+      ws.current = new WebSocket(url);
 
-        // Create audio buffer
-        const audioBuffer = audioContext.current.createBuffer(1, pcmData.length, 24000);
-        const channelData = audioBuffer.getChannelData(0);
+      ws.current.onopen = () => {
+        pushLog('success', 'Forbundet til backend');
+        setState(prev => ({ ...prev, isConnected: true, error: undefined }));
+        ws.current?.send(JSON.stringify({ type: 'start_session' }));
+      };
 
-        // Convert PCM16 to float32
-        for (let i = 0; i < pcmData.length; i++) {
-          channelData[i] = pcmData[i] / 32768;
+      ws.current.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleServerMessage(data);
+        } catch (error) {
+          pushLog('error', 'Kunne ikke parse serverbesked', error);
         }
+      };
 
-        // Play audio buffer
-        const source = audioContext.current.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContext.current.destination);
+      ws.current.onclose = (event) => {
+        pushLog('warning', `Forbindelse lukket - forsøger igen (${event.code})`);
+        setState(prev => ({ ...prev, isConnected: false }));
+        setTimeout(connectWebSocket, 2500);
+      };
 
-        await new Promise<void>((resolve) => {
-          source.onended = () => resolve();
-          source.start();
-        });
-      }
+      ws.current.onerror = (event) => {
+        pushLog('error', 'WebSocket fejl', event);
+        setState(prev => ({ ...prev, error: 'Forbindelse fejlede' }));
+      };
     } catch (error) {
-      console.error('Error playing audio queue:', error);
-    } finally {
-      isPlayingRef.current = false;
-      setState(prev => ({ ...prev, isPlaying: false }));
+      pushLog('error', 'Kunne ikke oprette WebSocket-forbindelse', error);
+      setState(prev => ({ ...prev, error: 'Kunne ikke forbinde' }));
     }
-  };
+  }, [handleServerMessage, pushLog, resolveWebSocketUrl]);
 
-  // Start recording
-  const startRecording = async () => {
+  const startRecording = useCallback(async () => {
     try {
-      if (!audioContext.current) {
-        await initializeAudio();
-      }
+      await initializeAudio();
 
       stream.current = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -250,22 +399,35 @@ function VoiceApp() {
         }
       });
 
+      // Set up audio processing with ScriptProcessor (but properly connected)
       microphone.current = audioContext.current!.createMediaStreamSource(stream.current);
       processor.current = audioContext.current!.createScriptProcessor(4096, 1, 1);
 
+      hasSentAudioRef.current = false;
+      audioChunkCount.current = 0;
+
+      console.log('Setting up audio processing with proper connection...');
+
       processor.current.onaudioprocess = (event) => {
-        if (!state.isRecording) return;
+        if (!isRecordingRef.current) return;
 
         const inputData = event.inputBuffer.getChannelData(0);
 
-        // Convert float32 to PCM16
-        const pcm16 = new Int16Array(inputData.length);
+        // Calculate audio level for visualization
+        let sum = 0;
         for (let i = 0; i < inputData.length; i++) {
+          sum += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sum / inputData.length);
+        currentAudioLevel.current = Math.min(rms * 10, 1); // Scale and clamp
+
+        // Convert to PCM16
+        const pcm16 = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i += 1) {
           const sample = Math.max(-1, Math.min(1, inputData[i]));
           pcm16[i] = sample * 32767;
         }
 
-        // Convert to base64 and send
         const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)));
 
         if (ws.current?.readyState === WebSocket.OPEN) {
@@ -273,24 +435,55 @@ function VoiceApp() {
             type: 'audio_chunk',
             audio: base64
           }));
+          hasSentAudioRef.current = true;
+          audioChunkCount.current += 1;
+
+          if (audioChunkCount.current % 20 === 0) {
+            console.log(`Sent ${audioChunkCount.current} audio chunks, level: ${currentAudioLevel.current.toFixed(2)}`);
+          }
         }
       };
 
+      // Connect through gain node to control volume and prevent feedback
+      const gainNode = audioContext.current!.createGain();
+      gainNode.gain.setValueAtTime(0.1, audioContext.current!.currentTime); // Very low volume
+
       microphone.current.connect(processor.current);
-      processor.current.connect(audioContext.current!.destination);
+      processor.current.connect(gainNode);
+      gainNode.connect(audioContext.current!.destination);
 
-      setState(prev => ({ ...prev, isRecording: true }));
-      console.log('🎤 Recording started');
+      console.log('Audio processing connected and active');
 
+      isRecordingRef.current = true;
+      recordingStartTime.current = Date.now();
+      setState(prev => ({ ...prev, isRecording: true, audioLevel: 0 }));
+      pushLog('info', 'Optagelse startet - audio processing aktiveret');
+      console.log('Recording started with ScriptProcessor');
+
+      // Start audio level update timer
+      const levelUpdateInterval = setInterval(() => {
+        if (isRecordingRef.current) {
+          setState(prev => ({ ...prev, audioLevel: currentAudioLevel.current }));
+        } else {
+          clearInterval(levelUpdateInterval);
+        }
+      }, 50); // Update 20 times per second
     } catch (error) {
-      console.error('Error starting recording:', error);
+      pushLog('error', 'Kunne ikke starte optagelse', error);
       setState(prev => ({ ...prev, error: 'Kunne ikke starte optagelse' }));
     }
-  };
+  }, [initializeAudio, pushLog]);
 
-  // Stop recording
-  const stopRecording = () => {
-    setState(prev => ({ ...prev, isRecording: false }));
+  const stopRecording = useCallback(() => {
+    if (!isRecordingRef.current) {
+      return;
+    }
+
+    isRecordingRef.current = false;
+    currentAudioLevel.current = 0;
+    setState(prev => ({ ...prev, isRecording: false, audioLevel: 0 }));
+
+    console.log('Stopping audio recording...');
 
     if (processor.current) {
       processor.current.disconnect();
@@ -307,17 +500,38 @@ function VoiceApp() {
       stream.current = null;
     }
 
-    // Trigger response generation
     if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({ type: 'create_response' }));
+      const recordingDuration = Date.now() - recordingStartTime.current;
+      const minRecordingTime = 250; // Minimum 250ms for at sikre nok audio data
+
+      if (hasSentAudioRef.current && recordingDuration >= minRecordingTime) {
+        ws.current.send(JSON.stringify({ type: 'commit_audio' }));
+        ws.current.send(JSON.stringify({ type: 'create_response' }));
+        pushLog('info', `Optagelse stoppet og sendt til AI (${recordingDuration}ms, ${audioChunkCount.current} chunks)`);
+      } else if (recordingDuration < minRecordingTime) {
+        pushLog('warning', `Optagelse for kort (${recordingDuration}ms) – hold knappen i mindst ${minRecordingTime}ms`);
+      } else {
+        pushLog('warning', `Ingen audio registreret – prøv igen (duration: ${recordingDuration}ms, chunks: ${audioChunkCount.current})`);
+
+        if (pendingUserMessageId.current) {
+          updateMessageContent(pendingUserMessageId.current, 'Ingen lyd registreret – prøv igen');
+          pendingUserMessageId.current = null;
+        }
+      }
     }
+  }, [pushLog, updateMessageContent]);
 
-    console.log('🔇 Recording stopped');
-  };
+  const handleHoldStart = useCallback((event: React.MouseEvent<HTMLButtonElement> | React.TouchEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    void startRecording();
+  }, [startRecording]);
 
-  // Initialize on mount
+  const handleHoldEnd = useCallback((event: React.MouseEvent<HTMLButtonElement> | React.TouchEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    stopRecording();
+  }, [stopRecording]);
+
   useEffect(() => {
-    initializeAudio();
     connectWebSocket();
 
     return () => {
@@ -328,9 +542,8 @@ function VoiceApp() {
         audioContext.current.close();
       }
     };
-  }, [initializeAudio, connectWebSocket]);
+  }, [connectWebSocket]);
 
-  // Format timestamp
   const formatTime = (timestamp: string) => {
     return new Date(timestamp).toLocaleTimeString('da-DK', {
       hour: '2-digit',
@@ -338,71 +551,161 @@ function VoiceApp() {
     });
   };
 
-  // Get status text
   const getStatusText = () => {
     if (!state.isConnected) return 'Forbinder...';
     if (state.isRecording) return 'Optager...';
     if (state.isProcessing) return 'Behandler...';
-    if (state.isPlaying) return 'Afspiller...';
+    if (state.isPlaying) return 'Afspiller svar...';
     return 'Klar til at lytte';
   };
 
+  const clearLogs = () => setLogs([]);
+
+  useEffect(() => {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTo({
+        top: transcriptRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    if (inspectorRef.current) {
+      inspectorRef.current.scrollTo({
+        top: inspectorRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [logs]);
+
   return (
-    <div className="voice-app">
-      <header className="app-header">
-        <h1>🎤 Kalundborg Voice Assistant</h1>
-        <div className="status">
-          <span className={`status-indicator ${state.isConnected ? 'connected' : 'disconnected'}`}></span>
-          <span className="status-text">{getStatusText()}</span>
+    <div className="audio-playground">
+      <header className="playground-header">
+        <div className="brand">
+          <span aria-hidden className="brand__icon">🎙️</span>
+          <div>
+            <h1>Kalundborg Voice Assistant</h1>
+            <p>Realtime OpenAI voice sandbox til borgerservice</p>
+          </div>
+        </div>
+        <div className="connection">
+          <span className={`connection__dot ${state.isConnected ? 'is-online' : 'is-offline'}`}></span>
+          <span className="connection__label">{getStatusText()}</span>
         </div>
       </header>
 
-      <div className="chat-container">
-        <div className="messages">
-          {messages.length === 0 ? (
-            <div className="welcome-message">
-              <h2>Velkommen til Kalundborg Voice Assistant</h2>
-              <p>Tryk og hold mikrofon-knappen og spørg om Kalundborg Kommune</p>
-              <p><strong>✨ OpenAI Realtime Voice API</strong></p>
+      <main className="playground-main">
+        <section className="session-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Samtale</h2>
+              <p>Assistant svarer på dansk og fokuserer på hjælp til Kalundborg Kommune.</p>
             </div>
-          ) : (
-            messages.map(message => (
-              <div key={message.id} className={`message ${message.role}`}>
-                <div className="message-header">
-                  <span className="role">{message.role === 'user' ? 'USER' : 'ASSISTANT'}</span>
-                  <span className="timestamp">{formatTime(message.timestamp)}</span>
-                </div>
-                <div className="message-content">
-                  {message.content}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="voice-controls">
-        <button
-          className={`voice-button ${state.isRecording ? 'recording' : ''}`}
-          onMouseDown={startRecording}
-          onMouseUp={stopRecording}
-          onTouchStart={startRecording}
-          onTouchEnd={stopRecording}
-          disabled={!state.isConnected || state.isProcessing}
-        >
-          {state.isRecording ? '🔴 Slip for at sende' : '🎤 Hold for at tale'}
-        </button>
-
-        {state.error && (
-          <div className="error-message">
-            {state.error}
+            <div className="session-flags">
+              <span className={`flag ${state.isProcessing ? 'is-active' : ''}`}>AI tænker</span>
+              <span className={`flag ${state.isRecording ? 'is-active' : ''}`}>Optagelse</span>
+              <span className={`flag ${state.isPlaying ? 'is-active' : ''}`}>Afspiller</span>
+            </div>
           </div>
-        )}
 
-        <div className="instructions">
-          <p>Hold knappen nede mens du taler, slip for at sende til AI</p>
-        </div>
-      </div>
+          <div className="transcript" ref={transcriptRef}>
+            {messages.length === 0 ? (
+              <div className="transcript__empty">
+                <h3>Klar når du er</h3>
+                <p>Hold mikrofonknappen nede, stil et spørgsmål om Kalundborg, og slip for at sende.</p>
+              </div>
+            ) : (
+              messages.map(message => {
+                const bubbleClasses = ['bubble', `bubble--${message.role}`];
+                if (message.content.startsWith('…')) {
+                  bubbleClasses.push('bubble--pending');
+                }
+
+                return (
+                  <article key={message.id} className={bubbleClasses.join(' ')}>
+                    <header>
+                      <span className="bubble__role">{message.role === 'user' ? 'Dig' : 'Assistant'}</span>
+                      <time>{formatTime(message.timestamp)}</time>
+                    </header>
+                    <p>{message.content}</p>
+                  </article>
+                );
+              })
+            )}
+          </div>
+
+          <div className="session-controls">
+            <button
+              className={`mic ${state.isRecording ? 'is-recording' : ''}`}
+              onMouseDown={handleHoldStart}
+              onMouseUp={handleHoldEnd}
+              onMouseLeave={handleHoldEnd}
+              onTouchStart={handleHoldStart}
+              onTouchEnd={handleHoldEnd}
+              onTouchCancel={handleHoldEnd}
+              disabled={!state.isConnected || state.isProcessing}
+            >
+              {state.isRecording ? 'Slip for at sende' : 'Hold for at tale'}
+            </button>
+
+            {state.isRecording && (
+              <div className="audio-visualizer">
+                <div className="audio-level-meter">
+                  <div
+                    className="audio-level-bar"
+                    style={{
+                      width: `${(state.audioLevel * 100)}%`,
+                      backgroundColor: state.audioLevel > 0.1 ? '#4CAF50' : '#666',
+                      height: '6px',
+                      borderRadius: '3px',
+                      transition: 'width 0.1s ease'
+                    }}
+                  />
+                </div>
+                <span className="audio-level-text">
+                  {state.audioLevel > 0.1 ? '🎤 Lytter...' : '🔇 Ingen lyd'}
+                  <span style={{ marginLeft: '10px', fontSize: '12px', opacity: 0.7 }}>
+                    Level: {Math.round(state.audioLevel * 100)}%
+                  </span>
+                </span>
+              </div>
+            )}
+            <div className="session-controls__meta">
+              <span>Node 18 · OpenAI realtime-2024-10-01 · PCM16</span>
+              {state.error && <span className="session-error">{state.error}</span>}
+            </div>
+          </div>
+        </section>
+
+        <aside className="inspector-panel">
+          <div className="inspector-header">
+            <div>
+              <h2>Diagnosticering</h2>
+              <p>Streaming logs fra backend og klient (seneste {MAX_LOG_ITEMS}).</p>
+            </div>
+            <button type="button" onClick={clearLogs}>Ryd log</button>
+          </div>
+          <div className="inspector-body" ref={inspectorRef}>
+            {logs.length === 0 ? (
+              <p className="inspector-empty">Loggen er tom.</p>
+            ) : (
+              logs.map(entry => (
+                <div key={entry.id} className={`log log--${entry.level}`}>
+                  <div className="log__meta">
+                    <span>{entry.level.toUpperCase()}</span>
+                    <time>{formatTime(entry.timestamp)}</time>
+                  </div>
+                  <p className="log__message">{entry.message}</p>
+                  {entry.meta && (
+                    <pre className="log__detail">{entry.meta}</pre>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+      </main>
     </div>
   );
 }

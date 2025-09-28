@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Kalundborg Voice Assistant - Project Specifics
+## Kalundborg Voice Assistant
 
 ### Architecture Overview
 **Full-stack real-time voice application** for Kalundborg Kommune with:
@@ -23,39 +23,60 @@ npm test                 # Run Jest tests in frontend
 npm run build           # Production build (frontend)
 
 # Workspace Management
-npm install:all         # Install all dependencies
+npm run install:all      # Install all dependencies
 npm run clean           # Reset workspaces (fixes conflicts)
 ```
 
-### Server Implementations
+### High-Level Architecture
+
+**WebSocket Communication Flow**:
+1. Frontend (VoiceApp.tsx) captures audio via MediaRecorder API
+2. Audio streams to backend via WebSocket (ws://localhost:3003)
+3. Backend proxies to OpenAI Realtime API (wss://api.openai.com/v1/realtime)
+4. Responses stream back through the same WebSocket connection
+5. Frontend plays audio responses and displays visualizations
+
+**Server Implementations**:
 Multiple backend variants exist - **use conversation-server.js as primary**:
 - `backend/conversation-server.js` - Main OpenAI Realtime API server
 - `backend/ga-conversation-server.js` - Google Assistant integration
 - `backend/realtime-server.js` - Alternative realtime implementation
 - `backend/server.js` - Legacy implementation
 
-### Key Technical Context
-1. **WebSocket Communication**: Real-time bidirectional streaming between frontend and backend
-2. **Danish Language**: All voice interactions optimized for Danish (da-DK)
-3. **Municipal Data**: Kalundborg-specific information in `backend/kalundborg-data.js`
-4. **Environment Setup**: Requires `.env` with `OPENAI_API_KEY`
-5. **ES Modules**: Backend uses `"type": "module"` - use ES6 imports
-6. **TypeScript**: Frontend is fully typed - maintain type safety
+**Danish Language Context**:
+- All prompts optimized for Danish (da-DK) conversations
+- Municipal data in `backend/kalundborg-data.js` contains local information
+- Responses must relate to Kalundborg Kommune services and information
 
-### Component Structure
-- **ConversationApp.tsx**: Primary conversation interface with WebSocket
-- **VoiceApp.tsx**: Alternative voice interface implementation
-- **App.tsx**: Main routing component
+### Key Technical Patterns
 
-### API & WebSocket Patterns
-```javascript
-// WebSocket connection pattern used
-const ws = new WebSocket('ws://localhost:3003');
-// Messages follow OpenAI Realtime API format
+**Audio Processing**:
+- Int16Array buffers for real-time audio streaming
+- WebAudio API for processing and visualization
+- VU meter and audio visualizer components for feedback
+
+**State Management**:
+- React hooks for component state
+- WebSocket connection state tracking
+- Performance monitoring with metrics collection
+
+**Error Handling**:
+- Comprehensive logging system with multiple levels
+- Connection fallback and retry mechanisms
+- Debug mode for development troubleshooting
+
+### Environment Requirements
+```bash
+# Required .env variables
+OPENAI_API_KEY=your_api_key_here
+
+# Backend uses ES modules
+"type": "module" in backend/package.json
 ```
 
-### Debugging Tips
-- Check browser console for WebSocket connection issues
-- Verify microphone permissions in browser
-- Monitor backend console for OpenAI API responses
-- Use `npm run clean` for workspace conflicts
+### Development Notes
+- Frontend TypeScript - maintain type safety for all changes
+- Backend ES6 modules - use import/export, not require()
+- WebSocket messages follow OpenAI Realtime API format
+- CORS configured for localhost:3001, 3002, 3004
+- Use `npm run clean` to resolve workspace conflicts
