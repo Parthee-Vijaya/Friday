@@ -211,6 +211,19 @@ function VoiceApp() {
     }
   }, [pushLog, selectedDeviceId]);
 
+  const stopAllAudio = useCallback(() => {
+    // Stop audio queue processing
+    isPlayingRef.current = false;
+    audioQueue.current = []; // Clear any pending audio
+    setState(prev => ({ ...prev, isPlaying: false }));
+
+    // Send interrupt signal to backend
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({ type: 'interrupt_response' }));
+      pushLog('info', 'Afbryder AI-svar for ny optagelse');
+    }
+  }, [pushLog]);
+
   const playAudioQueue = useCallback(async () => {
     if (!audioContext.current || audioQueue.current.length === 0) return;
 
@@ -218,7 +231,7 @@ function VoiceApp() {
     setState(prev => ({ ...prev, isPlaying: true }));
 
     try {
-      while (audioQueue.current.length > 0) {
+      while (audioQueue.current.length > 0 && isPlayingRef.current) {
         const pcmData = audioQueue.current.shift();
         if (!pcmData) continue;
 
@@ -240,7 +253,11 @@ function VoiceApp() {
 
         await new Promise<void>((resolve) => {
           source.onended = () => resolve();
-          source.start();
+          if (isPlayingRef.current) {
+            source.start();
+          } else {
+            resolve(); // Exit early if interrupted
+          }
         });
       }
     } catch (error) {
@@ -334,6 +351,11 @@ function VoiceApp() {
         setState(prev => ({ ...prev, isProcessing: false }));
         break;
 
+      case 'response_interrupted':
+        pushLog('info', 'Svar afbrudt for ny bruger input');
+        setState(prev => ({ ...prev, isProcessing: false, isPlaying: false }));
+        break;
+
       case 'error':
         pushLog('error', data.message);
         setState(prev => ({ ...prev, error: data.message, isProcessing: false }));
@@ -422,6 +444,12 @@ function VoiceApp() {
 
   const startRecording = useCallback(async () => {
     try {
+      // Stop any current audio playback immediately when user wants to speak
+      if (state.isPlaying || state.isProcessing) {
+        stopAllAudio();
+        pushLog('info', 'Afbryder assistentens svar - ny bruger input');
+      }
+
       await initializeAudio();
 
       const audioConstraints: MediaTrackConstraints = {
@@ -512,7 +540,7 @@ function VoiceApp() {
       pushLog('error', 'Kunne ikke starte optagelse', error);
       setState(prev => ({ ...prev, error: 'Kunne ikke starte optagelse' }));
     }
-  }, [initializeAudio, pushLog]);
+  }, [initializeAudio, pushLog, state.isPlaying, state.isProcessing, stopAllAudio]);
 
   const stopRecording = useCallback(() => {
     if (!isRecordingRef.current) {
@@ -703,9 +731,14 @@ function VoiceApp() {
               onTouchStart={handleHoldStart}
               onTouchEnd={handleHoldEnd}
               onTouchCancel={handleHoldEnd}
-              disabled={!state.isConnected || state.isProcessing}
+              disabled={!state.isConnected}
             >
-              {state.isRecording ? 'Slip for at sende' : 'Hold for at tale'}
+              {state.isRecording
+                ? 'Slip for at sende'
+                : state.isPlaying || state.isProcessing
+                  ? 'Tryk for at afbryde og tale'
+                  : 'Hold for at tale'
+              }
             </button>
 
             {state.isRecording && (

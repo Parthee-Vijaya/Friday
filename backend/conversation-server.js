@@ -344,6 +344,19 @@ wss.on('connection', (ws) => {
           }
           break;
 
+        case 'interrupt_response':
+          console.log('🛑 Bruger afbryder - stopper AI respons');
+          if (openaiWS && openaiWS.readyState === WebSocket.OPEN) {
+            openaiWS.send(JSON.stringify({
+              type: 'response.cancel'
+            }));
+          }
+          ws.send(JSON.stringify({
+            type: 'response_interrupted',
+            message: 'AI-svar afbrudt'
+          }));
+          break;
+
         case 'create_response':
           if (openaiWS && openaiWS.readyState === WebSocket.OPEN) {
             openaiWS.send(JSON.stringify({
