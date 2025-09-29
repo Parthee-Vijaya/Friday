@@ -327,19 +327,27 @@ wss.on('connection', (ws) => {
           break;
 
         case 'commit_audio':
-          if (audioChunksReceived > 0) {
-            // Only commit if we have received audio chunks
+          if (audioChunksReceived > 2) { // Require at least 3 chunks for reasonable audio
+            // Only commit if we have received sufficient audio chunks
             if (openaiWS && openaiWS.readyState === WebSocket.OPEN) {
-              openaiWS.send(JSON.stringify({
-                type: 'input_audio_buffer.commit'
-              }));
-              console.log(`✅ Audio committed (${audioChunksReceived} chunks received)`);
+              try {
+                openaiWS.send(JSON.stringify({
+                  type: 'input_audio_buffer.commit'
+                }));
+                console.log(`✅ Audio committed (${audioChunksReceived} chunks received)`);
+              } catch (commitError) {
+                console.error('❌ Audio commit fejl:', commitError);
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  message: 'Kunne ikke sende audio - prøv igen'
+                }));
+              }
             }
           } else {
-            console.warn('⚠️ Ignoring commit request - no audio chunks received');
+            console.warn(`⚠️ Ignoring commit request - insufficient audio chunks (${audioChunksReceived})`);
             ws.send(JSON.stringify({
               type: 'error',
-              message: 'Ingen audio data at sende - prøv at tale længere'
+              message: 'For lidt audio data - tal lidt længere og højere'
             }));
           }
           break;
@@ -347,9 +355,13 @@ wss.on('connection', (ws) => {
         case 'interrupt_response':
           console.log('🛑 Bruger afbryder - stopper AI respons');
           if (openaiWS && openaiWS.readyState === WebSocket.OPEN) {
-            openaiWS.send(JSON.stringify({
-              type: 'response.cancel'
-            }));
+            try {
+              openaiWS.send(JSON.stringify({
+                type: 'response.cancel'
+              }));
+            } catch (cancelError) {
+              console.log('⚠️ Response cancel ikke mulig:', cancelError.message);
+            }
           }
           ws.send(JSON.stringify({
             type: 'response_interrupted',

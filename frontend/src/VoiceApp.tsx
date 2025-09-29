@@ -225,7 +225,12 @@ function VoiceApp() {
   }, [pushLog]);
 
   const playAudioQueue = useCallback(async () => {
-    if (!audioContext.current || audioQueue.current.length === 0) return;
+    if (!audioContext.current || audioContext.current.state === 'closed' || audioQueue.current.length === 0) return;
+
+    // Resume context if suspended
+    if (audioContext.current.state === 'suspended') {
+      await audioContext.current.resume();
+    }
 
     isPlayingRef.current = true;
     setState(prev => ({ ...prev, isPlaying: true }));
@@ -233,7 +238,10 @@ function VoiceApp() {
     try {
       while (audioQueue.current.length > 0 && isPlayingRef.current) {
         const pcmData = audioQueue.current.shift();
-        if (!pcmData) continue;
+        if (!pcmData || pcmData.length === 0) continue;
+
+        // Skip if audio context is closed
+        if (audioContext.current.state === 'closed') break;
 
         const audioBuffer = audioContext.current.createBuffer(1, pcmData.length, 24000);
         const channelData = audioBuffer.getChannelData(0);
@@ -401,8 +409,14 @@ function VoiceApp() {
   }, []);
 
   const connectWebSocket = useCallback(() => {
+    // Prevent multiple concurrent connections
     if (ws.current && (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING)) {
       return;
+    }
+
+    // Clean up existing connection
+    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
+      ws.current.close();
     }
 
     const url = resolveWebSocketUrl();
@@ -414,7 +428,13 @@ function VoiceApp() {
       ws.current.onopen = () => {
         pushLog('success', 'Forbundet til backend');
         setState(prev => ({ ...prev, isConnected: true, error: undefined }));
-        ws.current?.send(JSON.stringify({ type: 'start_session' }));
+
+        // Give a small delay before starting session to ensure connection is stable
+        setTimeout(() => {
+          if (ws.current?.readyState === WebSocket.OPEN) {
+            ws.current.send(JSON.stringify({ type: 'start_session' }));
+          }
+        }, 100);
       };
 
       ws.current.onmessage = (event) => {
@@ -427,9 +447,17 @@ function VoiceApp() {
       };
 
       ws.current.onclose = (event) => {
-        pushLog('warning', `Forbindelse lukket - forsøger igen (${event.code})`);
+        pushLog('warning', `Forbindelse lukket (${event.code}) - venter med genoprettelse`);
         setState(prev => ({ ...prev, isConnected: false }));
-        setTimeout(connectWebSocket, 2500);
+
+        // Only attempt reconnect for normal closures or network issues
+        if (event.code !== 1000 && event.code !== 1001) {
+          setTimeout(() => {
+            if (!ws.current || ws.current.readyState === WebSocket.CLOSED) {
+              connectWebSocket();
+            }
+          }, 3000); // Increased delay to prevent rapid reconnects
+        }
       };
 
       ws.current.onerror = (event) => {
@@ -570,14 +598,17 @@ function VoiceApp() {
 
     if (ws.current?.readyState === WebSocket.OPEN) {
       const recordingDuration = Date.now() - recordingStartTime.current;
-      const minRecordingTime = 250; // Minimum 250ms for at sikre nok audio data
+      const minRecordingTime = 500; // Increased to 500ms for more reliable audio data
+      const minChunks = 3; // Minimum number of audio chunks
 
-      if (hasSentAudioRef.current && recordingDuration >= minRecordingTime) {
+      if (hasSentAudioRef.current && recordingDuration >= minRecordingTime && audioChunkCount.current >= minChunks) {
         ws.current.send(JSON.stringify({ type: 'commit_audio' }));
         ws.current.send(JSON.stringify({ type: 'create_response' }));
         pushLog('info', `Optagelse stoppet og sendt til AI (${recordingDuration}ms, ${audioChunkCount.current} chunks)`);
       } else if (recordingDuration < minRecordingTime) {
         pushLog('warning', `Optagelse for kort (${recordingDuration}ms) – hold knappen i mindst ${minRecordingTime}ms`);
+      } else if (audioChunkCount.current < minChunks) {
+        pushLog('warning', `For få audio chunks (${audioChunkCount.current}) – prøv at tale højere eller tættere på mikrofonen`);
       } else {
         pushLog('warning', `Ingen audio registreret – prøv igen (duration: ${recordingDuration}ms, chunks: ${audioChunkCount.current})`);
 
@@ -607,8 +638,10 @@ function VoiceApp() {
       if (ws.current) {
         ws.current.close();
       }
-      if (audioContext.current) {
-        audioContext.current.close();
+      if (audioContext.current && audioContext.current.state !== 'closed') {
+        audioContext.current.close().catch(error => {
+          console.warn('AudioContext close error:', error);
+        });
       }
     };
   }, [connectWebSocket, loadAudioDevices]);
